@@ -126,7 +126,7 @@ fn build_reply_pdu() {
     match pdu.validate(MessageType::Response, 1_251_699_618, b"tyS0n43d") {
         Err(Error::ResponseStatus(status)) => {
             assert_eq!(status.status, ErrorStatus::WrongLength);
-            assert_eq!(status.related_oid_index(), Some(1));
+            assert_eq!(status.related_oid_index(), Some(0));
         }
         other => panic!("unexpected validate result: {other:?}"),
     }

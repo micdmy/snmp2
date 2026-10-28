@@ -147,14 +147,15 @@ impl ResponseStatus {
         Self { status, index }
     }
 
-    /// 1-based index of the request varbind that caused the error, if any.
+    /// 0-based index of the request varbind that caused the error, if any.
     ///
+    /// Converts the PDU's 1-based `error-index` for direct use with request OID slices.
     /// Returns `None` when `error-index` is 0 (e.g. `tooBig`).
-    pub fn related_oid_index(&self) -> Option<u32> {
+    pub fn related_oid_index(&self) -> Option<usize> {
         if self.index == 0 {
             None
         } else {
-            Some(self.index)
+            Some((self.index as usize) - 1)
         }
     }
 }
