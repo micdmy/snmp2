@@ -1,4 +1,4 @@
-use crate::{MessageType, Pdu, Value};
+use crate::{ErrorStatus, MessageType, Pdu, ResponseStatus, Value};
 
 use super::{AsnReader, Error, Varbinds, Version};
 use super::{Oid, pdu, snmp};
@@ -116,6 +116,85 @@ fn build_reply_pdu() {
     assert_eq!(pdu.message_type, MessageType::Response);
     assert_eq!(pdu.error_status, 8);
     assert_eq!(pdu.error_index, 1);
+    assert_eq!(
+        pdu.validate(MessageType::Response, 1_251_699_618, b"tyS0n43d"),
+        Err(Error::ResponseStatus(ResponseStatus::new(
+            ErrorStatus::WrongLength,
+            1
+        )))
+    );
+    match pdu.validate(MessageType::Response, 1_251_699_618, b"tyS0n43d") {
+        Err(Error::ResponseStatus(status)) => {
+            assert_eq!(status.status, ErrorStatus::WrongLength);
+            assert_eq!(status.related_oid_index(), Some(1));
+        }
+        other => panic!("unexpected validate result: {other:?}"),
+    }
+}
+
+#[test]
+fn validate_too_big_response() {
+    let mut buf = pdu::Buf::default();
+    pdu::build(
+        Version::V2C,
+        b"tyS0n43d",
+        snmp::MSG_RESPONSE,
+        42,
+        &[],
+        1, // tooBig
+        0,
+        &mut buf,
+        #[cfg(feature = "v3")]
+        None,
+    )
+    .unwrap();
+    let pdu = Pdu::from_bytes(&buf).unwrap();
+    assert_eq!(pdu.error_status, 1);
+    assert_eq!(pdu.error_index, 0);
+    match pdu.validate(MessageType::Response, 42, b"tyS0n43d") {
+        Err(Error::ResponseStatus(status)) => {
+            assert_eq!(status.status, ErrorStatus::TooBig);
+            assert_eq!(status.related_oid_index(), None);
+            assert_eq!(
+                status.to_string(),
+                "SNMP error-status tooBig (1), error-index 0"
+            );
+        }
+        other => panic!("unexpected validate result: {other:?}"),
+    }
+}
+
+#[test]
+fn validate_no_error_response() {
+    let mut buf = pdu::Buf::default();
+    pdu::build(
+        Version::V2C,
+        b"tyS0n43d",
+        snmp::MSG_RESPONSE,
+        7,
+        &[(
+            &Oid::from(&[1, 3, 6, 1, 2, 1, 1, 3, 0]).unwrap(),
+            Value::Null,
+        )],
+        0,
+        0,
+        &mut buf,
+        #[cfg(feature = "v3")]
+        None,
+    )
+    .unwrap();
+    let pdu = Pdu::from_bytes(&buf).unwrap();
+    assert!(
+        pdu.validate(MessageType::Response, 7, b"tyS0n43d")
+            .is_ok()
+    );
+}
+
+#[test]
+fn error_status_unknown_roundtrip() {
+    assert_eq!(ErrorStatus::from(99), ErrorStatus::Unknown(99));
+    assert_eq!(u32::from(ErrorStatus::Unknown(99)), 99);
+    assert_eq!(u32::from(ErrorStatus::TooBig), 1);
 }
 
 #[test]

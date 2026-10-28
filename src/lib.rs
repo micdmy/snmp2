@@ -12,6 +12,7 @@ use std::fmt;
 
 pub mod asn1;
 pub use asn1::AsnReader;
+pub mod error_status;
 #[cfg(feature = "mibs")]
 pub mod mibs;
 pub mod pdu;
@@ -27,6 +28,7 @@ mod asyncsession;
 #[cfg(feature = "tokio")]
 pub use asyncsession::AsyncSession;
 
+pub use error_status::{ErrorStatus, ResponseStatus};
 pub use pdu::Pdu;
 
 pub use asn1_rs::Oid;
@@ -117,6 +119,8 @@ pub enum Error {
     Receive,
     /// MIB errors
     Mib(String),
+    /// Non-zero Response-PDU `error-status` ([RFC 3416](https://www.rfc-editor.org/rfc/rfc3416.html)).
+    ResponseStatus(ResponseStatus),
 }
 
 impl fmt::Display for Error {
@@ -144,6 +148,7 @@ impl fmt::Display for Error {
             Error::Send => write!(f, "Socket send error"),
             Error::Receive => write!(f, "Socket receive error"),
             Error::Mib(s) => write!(f, "MIB error: {}", s),
+            Error::ResponseStatus(status) => write!(f, "{status}"),
         }
     }
 }

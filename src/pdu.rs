@@ -1,7 +1,8 @@
 #[cfg(feature = "v3")]
 use crate::v3;
 use crate::{
-    BUFFER_SIZE, Error, MessageType, Oid, Result, Value, Varbinds, Version,
+    BUFFER_SIZE, Error, ErrorStatus, MessageType, Oid, ResponseStatus, Result, Value, Varbinds,
+    Version,
     asn1::{self, AsnReader},
     snmp,
 };
@@ -665,6 +666,12 @@ impl<'a> Pdu<'a> {
         }
         if self.community != expected_community {
             return Err(Error::CommunityMismatch);
+        }
+        if self.error_status != 0 {
+            return Err(Error::ResponseStatus(ResponseStatus::new(
+                ErrorStatus::from(self.error_status),
+                self.error_index,
+            )));
         }
         Ok(())
     }
