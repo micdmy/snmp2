@@ -172,35 +172,187 @@ type Result<T> = std::result::Result<T, Error>;
 
 const BUFFER_SIZE: usize = 65_507;
 
-pub enum Value<'a> {
+/// Storage strategy for payload-bearing [`ValueBuf`] variants (octets, OIDs, nested ASN).
+pub trait ValueStorage {
+    type Octets: AsRef<[u8]> + Clone;
+    type Oid: Clone + fmt::Display;
+    type Nested: Clone + fmt::Debug;
+}
+
+/// Borrowed storage: session/receive-buffer lifetimes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Borrowed<'a>(core::marker::PhantomData<&'a ()>);
+
+impl<'a> ValueStorage for Borrowed<'a> {
+    type Octets = &'a [u8];
+    type Oid = Oid<'a>;
+    type Nested = AsnReader<'a>;
+}
+
+/// Owned storage: values outlive the session receive buffer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Owned;
+
+impl ValueStorage for Owned {
+    type Octets = Vec<u8>;
+    type Oid = Oid<'static>;
+    type Nested = Vec<u8>;
+}
+
+/// SNMP value parameterized by [`ValueStorage`]. Prefer the aliases [`Value`] / [`OwnedValue`].
+#[derive(Clone)]
+pub enum ValueBuf<S: ValueStorage> {
     Boolean(bool),
     Null,
     Integer(i64),
-    OctetString(&'a [u8]),
-    ObjectIdentifier(Oid<'a>),
-    Sequence(AsnReader<'a>),
-    Set(AsnReader<'a>),
-    Constructed(u8, AsnReader<'a>),
+    OctetString(S::Octets),
+    ObjectIdentifier(S::Oid),
+    Sequence(S::Nested),
+    Set(S::Nested),
+    Constructed(u8, S::Nested),
 
     IpAddress([u8; 4]),
     Counter32(u32),
     Unsigned32(u32),
     Timeticks(u32),
-    Opaque(&'a [u8]),
+    Opaque(S::Octets),
     Counter64(u64),
 
     EndOfMibView,
     NoSuchObject,
     NoSuchInstance,
 
-    GetRequest(AsnReader<'a>),
-    GetNextRequest(AsnReader<'a>),
-    GetBulkRequest(AsnReader<'a>),
-    Response(AsnReader<'a>),
-    SetRequest(AsnReader<'a>),
-    InformRequest(AsnReader<'a>),
-    Trap(AsnReader<'a>),
-    Report(AsnReader<'a>),
+    GetRequest(S::Nested),
+    GetNextRequest(S::Nested),
+    GetBulkRequest(S::Nested),
+    Response(S::Nested),
+    SetRequest(S::Nested),
+    InformRequest(S::Nested),
+    Trap(S::Nested),
+    Report(S::Nested),
+}
+
+/// Value borrowed from a parse/session buffer.
+pub type Value<'a> = ValueBuf<Borrowed<'a>>;
+/// Value that owns its octets / nested ASN bytes / OID.
+pub type OwnedValue = ValueBuf<Owned>;
+
+/// Owned OID + value pair from a varbind list.
+pub type OwnedVarbind = (Oid<'static>, OwnedValue);
+
+impl OwnedValue {
+    /// Borrow as a [`Value`] tied to this owned storage.
+    pub fn as_value(&self) -> Value<'_> {
+        use ValueBuf::*;
+        match self {
+            Self::Boolean(v) => Boolean(*v),
+            Self::Null => Null,
+            Self::Integer(n) => Integer(*n),
+            Self::OctetString(s) => OctetString(s.as_slice()),
+            Self::ObjectIdentifier(oid) => ObjectIdentifier(oid.clone()),
+            Self::Sequence(b) => Sequence(AsnReader::from_bytes(b)),
+            Self::Set(b) => Set(AsnReader::from_bytes(b)),
+            Self::Constructed(ident, b) => Constructed(*ident, AsnReader::from_bytes(b)),
+            Self::IpAddress(a) => IpAddress(*a),
+            Self::Counter32(v) => Counter32(*v),
+            Self::Unsigned32(v) => Unsigned32(*v),
+            Self::Timeticks(v) => Timeticks(*v),
+            Self::Opaque(b) => Opaque(b.as_slice()),
+            Self::Counter64(v) => Counter64(*v),
+            Self::EndOfMibView => EndOfMibView,
+            Self::NoSuchObject => NoSuchObject,
+            Self::NoSuchInstance => NoSuchInstance,
+            Self::GetRequest(b) => GetRequest(AsnReader::from_bytes(b)),
+            Self::GetNextRequest(b) => GetNextRequest(AsnReader::from_bytes(b)),
+            Self::GetBulkRequest(b) => GetBulkRequest(AsnReader::from_bytes(b)),
+            Self::Response(b) => Response(AsnReader::from_bytes(b)),
+            Self::SetRequest(b) => SetRequest(AsnReader::from_bytes(b)),
+            Self::InformRequest(b) => InformRequest(AsnReader::from_bytes(b)),
+            Self::Trap(b) => Trap(AsnReader::from_bytes(b)),
+            Self::Report(b) => Report(AsnReader::from_bytes(b)),
+        }
+    }
+}
+
+impl PartialEq for OwnedValue {
+    fn eq(&self, other: &Self) -> bool {
+        use ValueBuf::*;
+        match (self, other) {
+            (Boolean(a), Boolean(b)) => a == b,
+            (Null, Null) => true,
+            (Integer(a), Integer(b)) => a == b,
+            (OctetString(a), OctetString(b)) => a == b,
+            (ObjectIdentifier(a), ObjectIdentifier(b)) => a == b,
+            (Sequence(a), Sequence(b)) => a == b,
+            (Set(a), Set(b)) => a == b,
+            (Constructed(i1, a), Constructed(i2, b)) => i1 == i2 && a == b,
+            (IpAddress(a), IpAddress(b)) => a == b,
+            (Counter32(a), Counter32(b)) => a == b,
+            (Unsigned32(a), Unsigned32(b)) => a == b,
+            (Timeticks(a), Timeticks(b)) => a == b,
+            (Opaque(a), Opaque(b)) => a == b,
+            (Counter64(a), Counter64(b)) => a == b,
+            (EndOfMibView, EndOfMibView)
+            | (NoSuchObject, NoSuchObject)
+            | (NoSuchInstance, NoSuchInstance) => true,
+            (GetRequest(a), GetRequest(b))
+            | (GetNextRequest(a), GetNextRequest(b))
+            | (GetBulkRequest(a), GetBulkRequest(b))
+            | (Response(a), Response(b))
+            | (SetRequest(a), SetRequest(b))
+            | (InformRequest(a), InformRequest(b))
+            | (Trap(a), Trap(b))
+            | (Report(a), Report(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for OwnedValue {}
+
+impl fmt::Debug for OwnedValue {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.as_value().fmt(f)
+    }
+}
+
+impl From<&Value<'_>> for OwnedValue {
+    fn from(value: &Value<'_>) -> Self {
+        match value {
+            Value::Boolean(v) => Self::Boolean(*v),
+            Value::Null => Self::Null,
+            Value::Integer(n) => Self::Integer(*n),
+            Value::OctetString(s) => Self::OctetString(s.to_vec()),
+            Value::ObjectIdentifier(oid) => Self::ObjectIdentifier(oid.to_owned()),
+            Value::Sequence(r) => Self::Sequence(r.as_bytes().to_vec()),
+            Value::Set(r) => Self::Set(r.as_bytes().to_vec()),
+            Value::Constructed(ident, r) => Self::Constructed(*ident, r.as_bytes().to_vec()),
+            Value::IpAddress(a) => Self::IpAddress(*a),
+            Value::Counter32(v) => Self::Counter32(*v),
+            Value::Unsigned32(v) => Self::Unsigned32(*v),
+            Value::Timeticks(v) => Self::Timeticks(*v),
+            Value::Opaque(b) => Self::Opaque(b.to_vec()),
+            Value::Counter64(v) => Self::Counter64(*v),
+            Value::EndOfMibView => Self::EndOfMibView,
+            Value::NoSuchObject => Self::NoSuchObject,
+            Value::NoSuchInstance => Self::NoSuchInstance,
+            Value::GetRequest(r) => Self::GetRequest(r.as_bytes().to_vec()),
+            Value::GetNextRequest(r) => Self::GetNextRequest(r.as_bytes().to_vec()),
+            Value::GetBulkRequest(r) => Self::GetBulkRequest(r.as_bytes().to_vec()),
+            Value::Response(r) => Self::Response(r.as_bytes().to_vec()),
+            Value::SetRequest(r) => Self::SetRequest(r.as_bytes().to_vec()),
+            Value::InformRequest(r) => Self::InformRequest(r.as_bytes().to_vec()),
+            Value::Trap(r) => Self::Trap(r.as_bytes().to_vec()),
+            Value::Report(r) => Self::Report(r.as_bytes().to_vec()),
+        }
+    }
+}
+
+impl Value<'_> {
+    /// Copy into an [`OwnedValue`] that does not borrow the session buffer.
+    pub fn to_owned(&self) -> OwnedValue {
+        OwnedValue::from(self)
+    }
 }
 
 impl fmt::Debug for Value<'_> {
@@ -371,6 +523,12 @@ impl<'a> Varbinds<'a> {
         Varbinds {
             inner: AsnReader::from_bytes(bytes),
         }
+    }
+
+    /// Collect all varbinds into owned OID/value pairs that outlive the buffer.
+    pub fn to_owned_vec(self) -> Vec<OwnedVarbind> {
+        self.map(|(oid, value)| (oid.to_owned(), value.to_owned()))
+            .collect()
     }
 }
 

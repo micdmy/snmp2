@@ -1,4 +1,4 @@
-use crate::{ErrorStatus, MessageType, Pdu, ResponseStatus, Value};
+use crate::{ErrorStatus, MessageType, OwnedValue, Pdu, ResponseStatus, Value};
 
 use super::{AsnReader, Error, Varbinds, Version};
 use super::{Oid, pdu, snmp};
@@ -331,6 +331,50 @@ fn test_varbinds_no_such_object_no_such_instance_end_of_mib_view() {
     let (oid, val) = pair.unwrap();
     assert_eq!(oid, oid!(1.3.6.1.2.1.2.2.1.20.2));
     assert!(matches!(val, Value::Counter32(3)));
+}
+
+#[test]
+fn test_varbinds_to_owned_outlives_buffer() {
+    let raw: Vec<u8> = vec![
+        // Counter64 varbind
+        0x30, 0x14, // SEQUENCE, length 20
+        0x06, 0x0b, // OBJECT IDENTIFIER, length 11
+        0x2b, 0x06, 0x01, 0x02, 0x01, 0x1f, 0x01, 0x01, 0x01, 0x06,
+        0x02, // OID: 1.3.6.1.2.1.31.1.1.1.6.2
+        0x46, 0x05, // Counter64, length 5
+        0x01, 0x79, 0x66, 0xac, 0x06, // Value 6331739142
+        // OctetString varbind
+        0x30, 0x0d, // SEQUENCE, length 13
+        0x06, 0x07, // OBJECT IDENTIFIER, length 7
+        0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, // OID: 1.3.6.1.2.1.1.1
+        0x04, 0x02, b'h', b'i', // OCTET STRING "hi"
+        // NoSuchObject
+        0x30, 0x0b, // SEQUENCE, length 11
+        0x06, 0x07, // OBJECT IDENTIFIER, length 7
+        0x2b, 0x06, 0x01, 0x02, 0x01, 0x87, 0x67, // OID: 1.3.6.1.2.1.999
+        0x80, 0x00, // noSuchObject
+    ];
+    let owned = Varbinds::from_bytes(&raw).to_owned_vec();
+    drop(raw); // owned must not depend on the original buffer
+
+    assert_eq!(owned.len(), 3);
+    assert_eq!(owned[0].0, oid!(1.3.6.1.2.1.31.1.1.1.6.2));
+    assert_eq!(owned[0].1, OwnedValue::Counter64(6_331_739_142));
+    assert!(matches!(
+        owned[0].1.as_value(),
+        Value::Counter64(6_331_739_142)
+    ));
+
+    assert_eq!(owned[1].0, oid!(1.3.6.1.2.1.1.1));
+    assert_eq!(owned[1].1, OwnedValue::OctetString(b"hi".to_vec()));
+    assert!(matches!(
+        owned[1].1.as_value(),
+        Value::OctetString(b) if b == b"hi"
+    ));
+
+    assert_eq!(owned[2].0, oid!(1.3.6.1.2.1.999));
+    assert_eq!(owned[2].1, OwnedValue::NoSuchObject);
+    assert!(matches!(owned[2].1.as_value(), Value::NoSuchObject));
 }
 
 #[test]

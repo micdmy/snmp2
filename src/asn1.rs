@@ -52,6 +52,11 @@ impl<'a> AsnReader<'a> {
         AsnReader { inner: bytes }
     }
 
+    /// Remaining undecoded bytes.
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.inner
+    }
+
     pub fn peek_byte(&mut self) -> Result<u8> {
         if self.inner.is_empty() {
             Err(Error::AsnEof)
